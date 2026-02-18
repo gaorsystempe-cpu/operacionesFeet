@@ -95,9 +95,11 @@ export interface Venta {
   categoria: string;
   metodoPago: string;
   cantidad: number;
-  total: number;
+  total: number; // Con IGV
+  subtotal: number; // Sin IGV
   costo: number;
-  margen: number;
+  margen: number; // Margen Neto (Subtotal - Costo)
+  margenBruto: number; // Margen con IGV (Total - Costo)
   margenPorcentaje: string;
   cliente?: string;
 }
