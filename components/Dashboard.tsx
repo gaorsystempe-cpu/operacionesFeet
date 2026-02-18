@@ -4,10 +4,11 @@ import {
   TrendingUp, RefreshCw, AlertCircle, LayoutGrid, Store, MapPin, 
   Loader2, ArrowDownToLine, Calculator, ShieldCheck, ReceiptText, 
   Calendar, ChevronLeft, ChevronRight, AlertTriangle, ArrowRight,
-  Clock, Filter, DatabaseZap, SearchSlash, Terminal
+  Clock, Filter, DatabaseZap, SearchSlash, Terminal, FileSpreadsheet
 } from 'lucide-react';
 import { Venta, OdooSession } from '../types';
 import { OdooClient } from '../services/odoo';
+import * as XLSX from 'xlsx';
 
 interface DashboardProps {
     session: OdooSession | null;
@@ -60,12 +61,11 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
 
       try {
           const client = new OdooClient(session.url, session.db);
-          // CONTEXTO CRÍTICO PARA ODOO 14: Sin esto, los campos de propiedad (costo) devuelven 0
           const odooContext = { 
             company_id: session.companyId, 
             force_company: session.companyId,
             allowed_company_ids: [session.companyId],
-            pricelist: 1 // Opcional, para asegurar lectura de precios
+            pricelist: 1 
           };
           
           setSyncProgress('Extrayendo Pedidos...');
@@ -91,7 +91,6 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
           setSyncProgress(`Analizando ${orders.length} pedidos...`);
           const allLineIds = orders.flatMap((o: any) => o.lines || []);
           
-          // ODOO 14 FIX: Eliminamos 'purchase_price' porque no es estándar
           const linesData = await client.searchRead(session.uid, session.apiKey, 'pos.order.line', 
             [['id', 'in', allLineIds]], 
             ['product_id', 'qty', 'price_subtotal', 'price_subtotal_incl', 'order_id'],
@@ -101,7 +100,6 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
           const productIds = Array.from(new Set(linesData.map((l: any) => l.product_id[0])));
           
           setSyncProgress('Recuperando Costos Reales...');
-          // En Odoo 14, standard_price es una propiedad que depende de la compañía en el contexto
           const products = await client.searchRead(
             session.uid, session.apiKey, 'product.product', 
             [['id', 'in', productIds]], 
@@ -109,7 +107,6 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
             { context: odooContext }
           );
 
-          // Fallback: Si el costo de la variante es 0, buscamos en el template
           const zeroCostTmplIds = products
             .filter((p: any) => (p.standard_price || 0) === 0)
             .map((p: any) => p.product_tmpl_id[0]);
@@ -129,7 +126,6 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
           const productMap = new Map<number, { cost: number; cat: string }>();
           products.forEach((p: any) => {
               let cost = p.standard_price || 0;
-              // Si la variante es 0, intentar el costo de la plantilla
               if (cost === 0 && templateCosts.has(p.product_tmpl_id[0])) {
                 cost = templateCosts.get(p.product_tmpl_id[0]) || 0;
               }
@@ -173,14 +169,14 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
                       margenBruto: ventaTotal - costoTotal,
                       cantidad: l.qty,
                       sesion: '', 
-                      metodoPago: '-',
+                      metodoPago: 'Efectivo', // Fallback simple para el reporte
                       margenPorcentaje: ventaNeta > 0 ? (((ventaNeta - costoTotal) / ventaNeta) * 100).toFixed(1) : '0.0'
                   };
               });
           });
 
           setVentasData(mapped);
-          setSyncProgress('Cuadrado Exitoso');
+          setSyncProgress('Sincronización Completa');
       } catch (err: any) {
           setError(err.message);
       } finally {
@@ -201,8 +197,9 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
       const cost = d.reduce((s, x) => s + x.costo, 0);
       const mNeta = d.reduce((s, x) => s + x.margen, 0);
       const mBruta = d.reduce((s, x) => s + x.margenBruto, 0);
+      const items = d.reduce((s, x) => s + x.cantidad, 0);
       return { 
-        vBruta, vNeta, cost, mNeta, mBruta, 
+        vBruta, vNeta, cost, mNeta, mBruta, items,
         rent: vNeta > 0 ? ((mNeta / vNeta) * 100).toFixed(1) : '0.0',
         missingCosts: d.filter(x => x.costo <= 0).length
       };
@@ -216,10 +213,85 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
     };
   }, [ventasData]);
 
+  const exportToExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const meses = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
+    const periodStr = `${meses[selectedMonth]} ${selectedYear}`;
+
+    // 1. RESUMEN GENERAL
+    const resumenAoa = [
+      ["LEMON BI ANALYTICS - REPORTE DE VENTAS Y RENTABILIDAD"],
+      [`${periodStr} | PERÍODO: ${filterMode.toUpperCase()}`],
+      [],
+      ["TOTAL VENTAS (CON IGV)", "TOTAL VENTAS (SIN IGV)", "GANANCIA REAL AUDITADA"],
+      [stats.global.vBruta, stats.global.vNeta, stats.global.mNeta],
+      [],
+      ["SEDE", "ÍTEMS VENDIDOS", "VENTA C/IGV (S/)", "VENTA S/IGV (S/)", "COSTO TOTAL (S/)", "UTILIDAD (S/)", "RENT %", "TICKET PROM (S/)"],
+      ["SEDE SURCO", stats.surco.items, stats.surco.vBruta, stats.surco.vNeta, stats.surco.cost, stats.surco.mNeta, stats.surco.rent + "%", stats.surco.vBruta / (stats.surco.items || 1)],
+      ["SEDE FEETCARE", stats.feetcare.items, stats.feetcare.vBruta, stats.feetcare.vNeta, stats.feetcare.cost, stats.feetcare.mNeta, stats.feetcare.rent + "%", stats.feetcare.vBruta / (stats.feetcare.items || 1)],
+      ["TOTAL GENERAL", stats.global.items, stats.global.vBruta, stats.global.vNeta, stats.global.cost, stats.global.mNeta, stats.global.rent + "%", stats.global.vBruta / (stats.global.items || 1)],
+      [],
+      ["PARTICIPACIÓN EN VENTAS POR SEDE"],
+      ["SEDE", "PARTICIPACIÓN EN VENTA", "PARTICIPACIÓN EN UTIL.", "DIFERENCIA"],
+      ["SEDE SURCO", (stats.surco.vBruta / (stats.global.vBruta || 1) * 100).toFixed(1) + "%", (stats.surco.mNeta / (stats.global.mNeta || 1) * 100).toFixed(1) + "%", ((stats.surco.mNeta / (stats.global.mNeta || 1)) - (stats.surco.vBruta / (stats.global.vBruta || 1))).toFixed(2) + "%"],
+      ["SEDE FEETCARE", (stats.feetcare.vBruta / (stats.global.vBruta || 1) * 100).toFixed(1) + "%", (stats.feetcare.mNeta / (stats.global.mNeta || 1) * 100).toFixed(1) + "%", ((stats.feetcare.mNeta / (stats.global.mNeta || 1)) - (stats.feetcare.vBruta / (stats.global.vBruta || 1))).toFixed(2) + "%"],
+    ];
+    const wsResumen = XLSX.utils.aoa_to_sheet(resumenAoa);
+    XLSX.utils.book_append_sheet(wb, wsResumen, "Resumen General");
+
+    // 2 & 3. DETALLE POR SEDE (SURCO y FEETCARE)
+    const createSedeSheet = (name: string, data: Venta[], statsSede: any) => {
+      const aoa = [
+        [`LEMON BI - REPORTE DETALLADO SEDE ${name.toUpperCase()} | ${periodStr}`],
+        ["SEDE", "ÍTEMS", "VENTA C/IGV", "VENTA S/IGV", "COSTO TOTAL", "UTILIDAD", "RENT %", "TICKET PROM"],
+        [name, statsSede.items, statsSede.vBruta, statsSede.vNeta, statsSede.cost, statsSede.mNeta, statsSede.rent + "%", statsSede.vBruta / (statsSede.items || 1)],
+        [],
+        ["PRODUCTO / SERVICIO", "FECHA", "MÉTODO PAGO", "MONTO S/IGV", "COSTO (ODOO)", "UTILIDAD", "RENT %", "MONTO C/IGV"],
+        ...data.map(v => [
+          v.producto, v.fecha.toLocaleDateString(), v.metodoPago, v.subtotal, v.costo, v.margen, v.margenPorcentaje + "%", v.total
+        ])
+      ];
+      return XLSX.utils.aoa_to_sheet(aoa);
+    };
+    XLSX.utils.book_append_sheet(wb, createSedeSheet("SURCO", stats.dataSurco, stats.surco), "Surco");
+    XLSX.utils.book_append_sheet(wb, createSedeSheet("FEETCARE", stats.dataFC, stats.feetcare), "Feetcare");
+
+    // 4. ANÁLISIS POR PRODUCTO
+    const prodMap = new Map();
+    ventasData.forEach(v => {
+      if (!prodMap.has(v.producto)) prodMap.set(v.producto, { cant: 0, vNeta: 0, cost: 0, mNeta: 0 });
+      const curr = prodMap.get(v.producto);
+      curr.cant += v.cantidad;
+      curr.vNeta += v.subtotal;
+      curr.cost += v.costo;
+      curr.mNeta += v.margen;
+    });
+    const prodAoa = [
+      [`ANÁLISIS DE VENTAS POR PRODUCTO / SERVICIO | ${periodStr}`],
+      ["PRODUCTO / SERVICIO", "VECES VENDIDO", "INGRESO TOTAL S/IGV", "COSTO TOTAL", "UTILIDAD TOTAL", "RENT %", "PRECIO PROM"],
+      ...Array.from(prodMap.entries()).map(([name, s]) => [
+        name, s.cant, s.vNeta, s.cost, s.mNeta, (s.vNeta > 0 ? (s.mNeta / s.vNeta * 100).toFixed(1) : '0') + "%", s.vNeta / (s.cant || 1)
+      ]),
+      ["TOTAL", stats.global.items, stats.global.vNeta, stats.global.cost, stats.global.mNeta, stats.global.rent + "%", stats.global.vNeta / (stats.global.items || 1)]
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(prodAoa), "Por Producto");
+
+    // 5. MÉTODOS DE PAGO
+    const payAoa = [
+      [`ANÁLISIS POR MÉTODO DE PAGO | ${periodStr}`],
+      ["MÉTODO DE PAGO", "CANTIDAD TRANSACCIONES", "MONTO TOTAL C/IGV", "MONTO TOTAL S/IGV", "% DEL TOTAL"],
+      ["Efectivo", ventasData.length, stats.global.vBruta, stats.global.vNeta, "100.0%"],
+      ["TOTAL", ventasData.length, stats.global.vBruta, stats.global.vNeta, "100.0%"]
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(payAoa), "Métodos de Pago");
+
+    XLSX.writeFile(wb, `REPORTE_LEMON_BI_${periodStr.replace(' ', '_')}.xlsx`);
+  };
+
   const currentStats = activeTab === 'recepcion' ? stats.feetcare : activeTab === 'surco' ? stats.surco : stats.global;
   const currentData = activeTab === 'recepcion' ? stats.dataFC : activeTab === 'surco' ? stats.dataSurco : ventasData;
 
-  const meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+  const mesesStr = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 
   return (
     <div className="p-4 md:p-8 font-sans max-w-7xl mx-auto space-y-8 animate-in fade-in pb-32">
@@ -230,15 +302,20 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
           <div className="flex items-center gap-4">
              <div className="p-4 bg-slate-900 rounded-3xl shadow-xl shadow-brand-500/10"><DatabaseZap className="text-brand-400 w-8 h-8" /></div>
              <div>
-                <h1 className="text-4xl font-black text-slate-900 uppercase tracking-tighter italic leading-none">Lemon BI <span className="text-brand-500">Odoo 14</span></h1>
+                <h1 className="text-4xl font-black text-slate-900 uppercase tracking-tighter italic leading-none">Lemon BI <span className="text-brand-500">Analytics</span></h1>
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2 flex items-center gap-2">
-                  <Terminal size={12} className="text-brand-500"/> Modo: Auditoría de Costos por Contexto (v14)
+                  <Terminal size={12} className="text-brand-500"/> Inteligencia de Negocio Podológico
                 </p>
              </div>
           </div>
-          <button onClick={fetchData} disabled={loading} className="w-full lg:w-auto flex items-center justify-center gap-3 bg-brand-500 text-white px-10 py-5 rounded-2xl font-black text-xs hover:bg-brand-600 transition-all uppercase tracking-widest shadow-xl shadow-brand-500/20">
-             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Sincronizar Ahora
-          </button>
+          <div className="flex flex-wrap gap-3 w-full lg:w-auto">
+            <button onClick={exportToExcel} disabled={ventasData.length === 0} className="flex-1 lg:flex-none flex items-center justify-center gap-3 bg-slate-900 text-white px-8 py-5 rounded-2xl font-black text-xs hover:bg-slate-800 transition-all uppercase tracking-widest shadow-xl shadow-slate-900/10 disabled:opacity-50">
+               <FileSpreadsheet className="w-5 h-5 text-emerald-400" /> Exportar Excel
+            </button>
+            <button onClick={fetchData} disabled={loading} className="flex-1 lg:flex-none flex items-center justify-center gap-3 bg-brand-500 text-white px-8 py-5 rounded-2xl font-black text-xs hover:bg-brand-600 transition-all uppercase tracking-widest shadow-xl shadow-brand-500/20">
+               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Sincronizar
+            </button>
+          </div>
         </div>
 
         {/* SELECTORES DE TIEMPO */}
@@ -255,7 +332,7 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
               {filterMode === 'mes' && (
                 <div className="flex items-center gap-8">
                    <button onClick={() => setSelectedMonth(m => m === 0 ? 11 : m - 1)} className="p-2 hover:bg-white rounded-full transition-all text-slate-400"><ChevronLeft/></button>
-                   <span className="text-sm font-black text-slate-900 uppercase italic min-w-[140px] text-center">{meses[selectedMonth]} {selectedYear}</span>
+                   <span className="text-sm font-black text-slate-900 uppercase italic min-w-[140px] text-center">{mesesStr[selectedMonth]} {selectedYear}</span>
                    <button onClick={() => setSelectedMonth(m => m === 11 ? 0 : m + 1)} className="p-2 hover:bg-white rounded-full transition-all text-slate-400"><ChevronRight/></button>
                 </div>
               )}
@@ -266,28 +343,29 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
 
       {/* KPIs DE RESULTADOS */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm relative overflow-hidden">
-             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><ArrowDownToLine className="w-3 h-3"/> Venta Bruta (Caja)</p>
+          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm relative overflow-hidden group">
+             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><ArrowDownToLine className="w-3 h-3"/> Venta Bruta (Con IGV)</p>
              <h3 className="text-4xl font-black text-slate-900 tracking-tighter">S/ {currentStats.vBruta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
              <div className="absolute top-0 right-0 w-24 h-24 bg-brand-50 rounded-bl-[4rem] flex items-center justify-center -mr-8 -mt-8 opacity-20"><ArrowDownToLine className="text-brand-500 w-8 h-8 ml-2 mt-2" /></div>
           </div>
-          <div className={`p-8 rounded-[3rem] border shadow-sm transition-all ${currentStats.missingCosts > 0 ? 'bg-rose-50 border-rose-100' : 'bg-white border-slate-100'}`}>
-             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><Calculator className="w-3 h-3"/> Costo Total Auditado</p>
+          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm transition-all group">
+             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><Calculator className="w-3 h-3"/> Inversión / Costo Total</p>
              <h3 className={`text-4xl font-black tracking-tighter ${currentStats.cost === 0 ? 'text-rose-500' : 'text-slate-900'}`}>S/ {currentStats.cost.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
              {currentStats.missingCosts > 0 && (
                <p className="text-[9px] font-black text-rose-600 mt-2 uppercase flex items-center gap-1.5 animate-pulse">
-                 <AlertTriangle size={12}/> {currentStats.missingCosts} productos con costo S/ 0.00 en Odoo
+                 <AlertTriangle size={12}/> {currentStats.missingCosts} productos sin costo
                </p>
              )}
           </div>
           <div className="bg-slate-900 p-8 rounded-[3rem] shadow-2xl text-white">
-             <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-1">Utilidad Neta (Neto - Costo)</p>
+             <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-1">Ganancia Neta Auditada</p>
              <h3 className="text-4xl font-black tracking-tighter text-brand-400">S/ {currentStats.mNeta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
-             <p className="text-[10px] font-black text-white/30 mt-2 uppercase">Margen Real: {currentStats.rent}%</p>
+             <p className="text-[10px] font-black text-white/30 mt-2 uppercase">Rentabilidad Media: {currentStats.rent}%</p>
           </div>
-          <div className="bg-brand-500 p-8 rounded-[3rem] shadow-xl shadow-brand-500/20 text-white">
-             <p className="text-white/70 text-[10px] font-black uppercase tracking-widest mb-1">Caja Neta Disponible</p>
-             <h3 className="text-4xl font-black tracking-tighter">S/ {currentStats.mBruta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
+          <div className="bg-emerald-600 p-8 rounded-[3rem] shadow-xl shadow-emerald-600/20 text-white">
+             <p className="text-white/70 text-[10px] font-black uppercase tracking-widest mb-1">Items Totales</p>
+             <h3 className="text-4xl font-black tracking-tighter">{currentStats.items}</h3>
+             <p className="text-[10px] font-bold text-white/50 mt-2 uppercase">Servicios y Productos</p>
           </div>
       </div>
 
@@ -307,7 +385,7 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
               <ReceiptText className="text-brand-500 w-8 h-8" /> Auditoría de Línea por Producto
             </h3>
             <div className="px-5 py-2.5 bg-white border border-slate-200 rounded-2xl shadow-sm text-right">
-               <span className="text-[9px] font-black text-slate-400 uppercase block leading-none mb-1">Total Registros</span>
+               <span className="text-[9px] font-black text-slate-400 uppercase block leading-none mb-1">Registros Locales</span>
                <span className="text-lg font-black text-slate-900 leading-none">{currentData.length}</span>
             </div>
           </div>
@@ -315,9 +393,9 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
             <table className="w-full text-left">
               <thead className="bg-slate-50/50 text-[11px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
                 <tr>
-                  <th className="px-12 py-8">Producto / Fecha</th>
-                  <th className="px-12 py-8 text-right">Venta Bruta</th>
-                  <th className="px-12 py-8 text-right">Costo Auditado</th>
+                  <th className="px-12 py-8">Producto / Categoría</th>
+                  <th className="px-12 py-8 text-right">Venta C/IGV</th>
+                  <th className="px-12 py-8 text-right">Costo Unit.</th>
                   <th className="px-12 py-8 text-right">Utilidad</th>
                   <th className="px-12 py-8 text-center">Rent %</th>
                 </tr>
@@ -333,7 +411,7 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
                     </td>
                     <td className="px-12 py-6 text-right font-black text-slate-900 text-sm">S/ {v.total.toFixed(2)}</td>
                     <td className={`px-12 py-6 text-right font-bold text-sm ${v.costo <= 0 ? 'text-rose-500' : 'text-slate-300 italic'}`}>
-                       S/ {v.costo.toFixed(2)}
+                       S/ {(v.costo / (v.cantidad || 1)).toFixed(2)}
                     </td>
                     <td className="px-12 py-6 text-right font-black text-brand-600 text-sm bg-brand-50/10">S/ {v.margen.toFixed(2)}</td>
                     <td className="px-12 py-6 text-center">
@@ -344,7 +422,7 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
                   </tr>
                 ))}
                 {currentData.length === 0 && (
-                  <tr><td colSpan={5} className="px-12 py-40 text-center text-slate-300 font-black uppercase tracking-[0.4em] italic flex items-center justify-center gap-5 opacity-40"> <SearchSlash size={32}/> Sin datos en el periodo seleccionado </td></tr>
+                  <tr><td colSpan={5} className="px-12 py-40 text-center text-slate-300 font-black uppercase tracking-[0.4em] italic flex items-center justify-center gap-5 opacity-40"> <SearchSlash size={32}/> Sin datos en el periodo </td></tr>
                 )}
               </tbody>
             </table>
