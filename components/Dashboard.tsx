@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { 
   TrendingUp, RefreshCw, AlertCircle, FileSpreadsheet, 
-  LayoutGrid, ClipboardList, Store, MapPin, Loader2, ArrowDownToLine, Calculator, Target, Info, ShieldCheck, ReceiptText, Calendar, ChevronLeft, ChevronRight, Filter
+  LayoutGrid, ClipboardList, Store, MapPin, Loader2, ArrowDownToLine, Calculator, Target, Info, ShieldCheck, ReceiptText, Calendar, ChevronLeft, ChevronRight, Filter, AlertTriangle, ArrowRight
 } from 'lucide-react';
 import { Venta, OdooSession } from '../types';
 import { OdooClient } from '../services/odoo';
@@ -24,7 +24,7 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
   const [activeTab, setActiveTab] = useState<ReportTab>('consolidado');
   const [syncProgress, setSyncProgress] = useState('');
   
-  // Estados para selección específica de tiempo
+  // Selección de Tiempo
   const today = new Date();
   const [selectedMonth, setSelectedMonth] = useState(today.getMonth());
   const [selectedYear, setSelectedYear] = useState(today.getFullYear());
@@ -33,11 +33,9 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
     end: today.toLocaleDateString('en-CA')
   });
 
-  // Cálculo de fechas finales para la consulta Odoo
   const dateRange = useMemo(() => {
     let start = '';
     let end = '';
-
     if (filterMode === 'hoy') {
       start = today.toLocaleDateString('en-CA');
       end = start;
@@ -63,7 +61,7 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
       try {
           const client = new OdooClient(session.url, session.db);
           
-          setSyncProgress(`Consultando ${dateRange.start} al ${dateRange.end}...`);
+          setSyncProgress(`Buscando ventas del ${dateRange.start}...`);
           const domain: any[] = [
             ['state', 'in', ['paid', 'done', 'invoiced']], 
             ['date_order', '>=', `${dateRange.start} 00:00:00`],
@@ -73,31 +71,32 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
 
           const orders = await client.searchRead(session.uid, session.apiKey, 'pos.order', domain, 
             ['date_order', 'config_id', 'lines', 'amount_total', 'user_id'], 
-            { order: 'date_order desc', limit: 3000 }
+            { order: 'date_order desc', limit: 4000 }
           );
 
           if (!orders || orders.length === 0) {
               setVentasData([]);
-              setSyncProgress('Sin registros');
+              setSyncProgress('No hay ventas en este periodo');
               setLoading(false);
               return;
           }
 
-          setSyncProgress('Extrayendo ítems...');
+          setSyncProgress(`Analizando ${orders.length} órdenes...`);
           const allLineIds = orders.flatMap((o: any) => o.lines || []);
           const linesData = await client.searchRead(session.uid, session.apiKey, 'pos.order.line', [['id', 'in', allLineIds]], 
                 ['product_id', 'qty', 'price_subtotal', 'price_subtotal_incl', 'order_id']);
 
-          setSyncProgress('Sincronizando costos...');
+          setSyncProgress('Sincronizando Costos Reales...');
           const productIds = Array.from(new Set(linesData.map((l: any) => l.product_id[0])));
           
+          // CRÍTICO: Solicitamos costos forzando el contexto de la compañía para evitar el 0 por defecto
           const products = await client.searchRead(
             session.uid, 
             session.apiKey, 
             'product.product', 
             [['id', 'in', productIds]], 
-            ['standard_price', 'categ_id'],
-            { context: { company_id: session.companyId } }
+            ['standard_price', 'categ_id', 'display_name'],
+            { context: { company_id: session.companyId, force_company: session.companyId } }
           );
           
           const productMap = new Map<number, { cost: number; cat: string }>(
@@ -122,10 +121,15 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
               return orderLines.map((l: any) => {
                   const pId = l.product_id[0];
                   const pInfo = productMap.get(pId) || { cost: 0, cat: 'S/C' };
+                  
                   const ventaNeta = l.price_subtotal || 0; 
                   const ventaTotal = l.price_subtotal_incl || 0;
-                  const costoTotalLinea = pInfo.cost * l.qty;
+                  const costoUnitario = pInfo.cost;
+                  const costoTotalLinea = costoUnitario * l.qty;
                   
+                  const margenNeto = ventaNeta - costoTotalLinea;
+                  const margenBruto = ventaTotal - costoTotalLinea;
+
                   return {
                       fecha: orderDate,
                       sede,
@@ -136,20 +140,20 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
                       total: ventaTotal, 
                       subtotal: ventaNeta,
                       costo: costoTotalLinea,
-                      margen: ventaNeta - costoTotalLinea,
-                      margenBruto: ventaTotal - costoTotalLinea,
+                      margen: margenNeto,
+                      margenBruto: margenBruto,
                       cantidad: l.qty,
                       sesion: '', 
                       metodoPago: '-',
-                      margenPorcentaje: ventaNeta > 0 ? (((ventaNeta - costoTotalLinea) / ventaNeta) * 100).toFixed(1) : '0.0'
+                      margenPorcentaje: ventaNeta > 0 ? ((margenNeto / ventaNeta) * 100).toFixed(1) : '0.0'
                   };
               });
           });
 
           setVentasData(mapped);
-          setSyncProgress('¡Información al día!');
+          setSyncProgress('¡Sincronización Exitosa!');
       } catch (err: any) {
-          setError(`Error de sincronización: ${err.message}`);
+          setError(`Odoo Error: ${err.message}`);
       } finally {
           setLoading(false);
       }
@@ -157,9 +161,9 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Filtrado por Sedes
   const dataFeetCare = useMemo(() => ventasData.filter(v => 
-    v.sede.toUpperCase().includes('FEETCARE') || 
-    (v.sede.toUpperCase().includes('RECEPCION') && !v.sede.toUpperCase().includes('SURCO'))
+    v.sede.toUpperCase().includes('FEETCARE') || v.sede.toUpperCase().includes('RECEPCION')
   ), [ventasData]);
 
   const dataFeetSurco = useMemo(() => ventasData.filter(v => 
@@ -197,57 +201,56 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
            <h3 className="text-xl font-black text-slate-900 uppercase tracking-tighter flex items-center gap-3">
              <ReceiptText className="text-brand-500 w-6 h-6" /> {title}
            </h3>
-           <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mt-1 italic">Ventas detalladas del periodo seleccionado</p>
-        </div>
-        <div className="text-right">
-           <span className="text-[9px] font-black text-slate-400 uppercase block mb-1">Items Totales</span>
-           <span className="text-xl font-black text-slate-900">{data.length}</span>
+           <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mt-1 italic">Comparativa Neta vs Bruta para Cuadre Escrito</p>
         </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left">
           <thead className="bg-slate-50/50 text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
             <tr>
-              <th className="px-8 py-6">Producto / Servicio</th>
-              <th className="px-8 py-6 text-right">Monto Sin IGV</th>
-              <th className="px-8 py-6 text-right">Monto Con IGV</th>
+              <th className="px-8 py-6">Producto / Auditoría Costo</th>
+              <th className="px-8 py-6 text-right">Venta (Sin IGV)</th>
+              <th className="px-8 py-6 text-right">Venta (Con IGV)</th>
               <th className="px-8 py-6 text-right">Costo Odoo</th>
-              <th className="px-8 py-6 text-right">Utilidad</th>
+              <th className="px-8 py-6 text-right">Utilidad Real</th>
               <th className="px-8 py-6 text-center">Rent %</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {data.map((v, i) => (
-              <tr key={i} className="hover:bg-slate-50 transition-all group">
+              <tr key={i} className={`hover:bg-slate-50 transition-all ${v.costo === 0 ? 'bg-amber-50/30' : ''}`}>
                 <td className="px-8 py-5">
                    <p className="font-black text-slate-900 text-[11px] uppercase leading-tight">{v.producto}</p>
-                   <p className="text-[8px] text-slate-400 font-bold mt-1 uppercase">{v.fecha.toLocaleString('es-PE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                   {v.costo === 0 ? (
+                     <p className="text-[8px] text-amber-600 font-black mt-1 uppercase flex items-center gap-1">
+                       <AlertTriangle size={10}/> Ojo: Costo 0 en Odoo (Revisar Ficha)
+                     </p>
+                   ) : (
+                     <p className="text-[8px] text-slate-400 font-bold mt-1 uppercase">{v.fecha.toLocaleDateString('es-PE')} - {v.sede}</p>
+                   )}
                 </td>
-                <td className="px-8 py-5 text-right font-bold text-slate-400 text-xs italic">S/ {v.subtotal.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
-                <td className="px-8 py-5 text-right font-black text-slate-900 text-xs">S/ {v.total.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
-                <td className="px-8 py-5 text-right font-bold text-slate-300 text-xs italic">S/ {v.costo.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
-                <td className="px-8 py-5 text-right font-black text-brand-600 text-xs bg-brand-50/20">S/ {v.margen.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
+                <td className="px-8 py-5 text-right font-bold text-slate-400 text-xs italic">S/ {v.subtotal.toFixed(2)}</td>
+                <td className="px-8 py-5 text-right font-black text-slate-900 text-xs">S/ {v.total.toFixed(2)}</td>
+                <td className={`px-8 py-5 text-right font-bold text-xs ${v.costo === 0 ? 'text-amber-500 underline' : 'text-slate-300'}`}>S/ {v.costo.toFixed(2)}</td>
+                <td className="px-8 py-5 text-right font-black text-brand-600 text-xs">S/ {v.margen.toFixed(2)}</td>
                 <td className="px-8 py-5 text-center">
-                   <span className="text-[10px] font-black text-brand-700 bg-brand-50 px-2 py-1 rounded-lg">{v.margenPorcentaje}%</span>
+                   <span className={`text-[10px] font-black px-2 py-1 rounded-lg ${Number(v.margenPorcentaje) === 100 ? 'bg-amber-100 text-amber-700' : 'bg-brand-50 text-brand-700'}`}>
+                      {v.margenPorcentaje}%
+                   </span>
                 </td>
               </tr>
             ))}
-            {data.length === 0 && (
-                <tr><td colSpan={6} className="px-8 py-32 text-center text-slate-300 font-black uppercase tracking-[0.3em] italic">No se encontraron ventas en este rango</td></tr>
-            )}
           </tbody>
-          {data.length > 0 && (
-            <tfoot className="bg-slate-900 text-white font-black text-[11px]">
-               <tr>
-                  <td className="px-8 py-6 text-right text-slate-500 uppercase">Totales {title}:</td>
-                  <td className="px-8 py-6 text-right text-slate-400 italic">S/ {totals.vNeta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
-                  <td className="px-8 py-6 text-right text-white text-sm tracking-tighter">S/ {totals.vBruta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
-                  <td className="px-8 py-6 text-right text-slate-500">S/ {totals.costo.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
-                  <td className="px-8 py-6 text-right text-brand-400 text-sm">S/ {totals.mNeta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
-                  <td className="px-8 py-6 text-center text-brand-500">{totals.rent}%</td>
-               </tr>
-            </tfoot>
-          )}
+          <tfoot className="bg-slate-900 text-white font-black text-[11px]">
+             <tr>
+                <td className="px-8 py-6 text-right text-slate-500 uppercase">Totales {title}:</td>
+                <td className="px-8 py-6 text-right text-slate-400 italic">S/ {totals.vNeta.toFixed(2)}</td>
+                <td className="px-8 py-6 text-right text-white text-sm tracking-tighter">S/ {totals.vBruta.toFixed(2)}</td>
+                <td className="px-8 py-6 text-right text-slate-500">S/ {totals.costo.toFixed(2)}</td>
+                <td className="px-8 py-6 text-right text-brand-400 text-sm italic">S/ {totals.mNeta.toFixed(2)}</td>
+                <td className="px-8 py-6 text-center text-brand-500">{totals.rent}%</td>
+             </tr>
+          </tfoot>
         </table>
       </div>
     </div>
@@ -262,136 +265,128 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
            <div className="flex items-center gap-4">
              <div className="p-4 bg-brand-500 rounded-[1.5rem] shadow-xl shadow-brand-500/30"><TrendingUp className="text-white w-7 h-7" /></div>
              <div>
-                <h1 className="text-4xl font-black text-slate-900 tracking-tighter uppercase italic leading-none">Análisis de Resultados</h1>
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2">Periodo: {dateRange.start} al {dateRange.end}</p>
+                <h1 className="text-4xl font-black text-slate-900 tracking-tighter uppercase italic leading-none">Auditoría Real de Caja</h1>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2 flex items-center gap-2">
+                  <ShieldCheck size={12} className="text-emerald-500"/> Sincronizado: {dateRange.start} al {dateRange.end}
+                </p>
              </div>
            </div>
         </div>
-        <div className="flex gap-4 w-full lg:w-auto">
-           <button onClick={fetchData} disabled={loading} className="flex-1 lg:flex-none flex items-center justify-center gap-3 bg-white px-8 py-4 rounded-2xl border border-slate-200 font-black text-[11px] hover:bg-slate-50 transition-all uppercase tracking-widest shadow-sm">
-             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-brand-500' : ''}`} /> Sincronizar Odoo
-           </button>
-        </div>
+        <button onClick={fetchData} disabled={loading} className="w-full lg:w-auto flex items-center justify-center gap-3 bg-white px-10 py-5 rounded-2xl border border-slate-200 font-black text-[11px] hover:bg-slate-50 transition-all uppercase tracking-widest shadow-sm">
+           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-brand-500' : ''}`} /> Sincronizar Odoo
+        </button>
       </div>
 
-      {/* CENTRO DE COMANDO DE FILTROS - MEJORADO */}
-      <div className="bg-white p-8 rounded-[3.5rem] shadow-xl border border-slate-100 space-y-8">
-         <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-            <div className="flex bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
+      {/* CENTRO DE CONTROL DE FILTROS (DÍA, MES, PERSONALIZADO) */}
+      <div className="bg-white p-8 rounded-[3.5rem] shadow-2xl border border-slate-100 space-y-8 relative overflow-hidden">
+         <div className="flex flex-col md:flex-row items-center justify-between gap-6 relative z-10">
+            <div className="flex bg-slate-100 p-1.5 rounded-2xl border border-slate-200 w-full md:w-auto">
                {(['hoy', 'mes', 'anio', 'custom'] as FilterMode[]).map(m => (
-                 <button key={m} onClick={() => setFilterMode(m)} className={`px-10 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${filterMode === m ? 'bg-white text-brand-600 shadow-sm border border-brand-100 scale-105' : 'text-slate-400 hover:text-slate-600'}`}>
-                    {m === 'hoy' ? 'Hoy' : m === 'mes' ? 'Mes' : m === 'anio' ? 'Año' : 'Personalizado'}
+                 <button key={m} onClick={() => setFilterMode(m)} className={`flex-1 md:flex-none px-8 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${filterMode === m ? 'bg-white text-brand-600 shadow-sm border border-brand-100 scale-105' : 'text-slate-400 hover:text-slate-600'}`}>
+                    {m === 'hoy' ? 'VENTA HOY' : m === 'mes' ? 'POR MES' : m === 'anio' ? 'POR AÑO' : 'PERSONALIZADO'}
                  </button>
                ))}
             </div>
 
-            <div className="flex items-center gap-4 bg-slate-50 px-6 py-4 rounded-3xl border border-slate-100">
+            <div className="flex items-center gap-4 bg-slate-50 px-8 py-5 rounded-3xl border border-slate-100 w-full md:w-auto justify-center">
                {filterMode === 'mes' && (
-                  <div className="flex items-center gap-4 animate-in slide-in-from-right-4">
-                     <button onClick={() => setSelectedMonth(prev => prev === 0 ? 11 : prev - 1)} className="p-2 hover:bg-white rounded-lg transition-colors text-slate-400"><ChevronLeft size={20}/></button>
-                     <div className="flex flex-col items-center min-w-[120px]">
-                        <span className="text-[10px] font-black text-slate-400 uppercase">Mes Seleccionado</span>
-                        <span className="text-sm font-black text-slate-900 uppercase tracking-tight">{meses[selectedMonth]} {selectedYear}</span>
+                  <div className="flex items-center gap-6 animate-in slide-in-from-right-4">
+                     <button onClick={() => setSelectedMonth(prev => prev === 0 ? 11 : prev - 1)} className="p-3 hover:bg-white rounded-full transition-all text-slate-400"><ChevronLeft size={24}/></button>
+                     <div className="flex flex-col items-center min-w-[140px]">
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Auditar Mes</span>
+                        <span className="text-lg font-black text-slate-900 uppercase italic">{meses[selectedMonth]} {selectedYear}</span>
                      </div>
-                     <button onClick={() => setSelectedMonth(prev => prev === 11 ? 0 : prev + 1)} className="p-2 hover:bg-white rounded-lg transition-colors text-slate-400"><ChevronRight size={20}/></button>
+                     <button onClick={() => setSelectedMonth(prev => prev === 11 ? 0 : prev + 1)} className="p-3 hover:bg-white rounded-full transition-all text-slate-400"><ChevronRight size={24}/></button>
                   </div>
                )}
 
-               {filterMode === 'anio' && (
-                  <div className="flex items-center gap-6 animate-in slide-in-from-right-4">
-                     <button onClick={() => setSelectedYear(y => y - 1)} className="p-2 hover:bg-white rounded-lg transition-colors text-slate-400"><ChevronLeft size={20}/></button>
-                     <div className="flex flex-col items-center">
-                        <span className="text-[10px] font-black text-slate-400 uppercase">Año Fiscal</span>
-                        <span className="text-sm font-black text-slate-900">{selectedYear}</span>
+               {filterMode === 'hoy' && (
+                  <div className="flex items-center gap-4 text-emerald-600 animate-in fade-in">
+                     <Calendar className="w-6 h-6" />
+                     <div className="flex flex-col">
+                        <span className="text-[9px] font-black uppercase tracking-widest">Venta del Día</span>
+                        <span className="text-lg font-black italic">{today.toLocaleDateString('es-PE', { day: 'numeric', month: 'long' })}</span>
                      </div>
-                     <button onClick={() => setSelectedYear(y => y + 1)} className="p-2 hover:bg-white rounded-lg transition-colors text-slate-400"><ChevronRight size={20}/></button>
                   </div>
                )}
 
                {filterMode === 'custom' && (
                   <div className="flex items-center gap-4 animate-in slide-in-from-right-4">
-                     <div className="flex flex-col gap-1">
-                        <span className="text-[8px] font-black text-slate-400 uppercase ml-1">Desde</span>
-                        <input type="date" value={customRange.start} onChange={e => setCustomRange({...customRange, start: e.target.value})} className="p-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-brand-500/20" />
-                     </div>
-                     <span className="text-slate-300 mt-4">→</span>
-                     <div className="flex flex-col gap-1">
-                        <span className="text-[8px] font-black text-slate-400 uppercase ml-1">Hasta</span>
-                        <input type="date" value={customRange.end} onChange={e => setCustomRange({...customRange, end: e.target.value})} className="p-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-brand-500/20" />
-                     </div>
-                  </div>
-               )}
-
-               {filterMode === 'hoy' && (
-                  <div className="flex items-center gap-3 px-4 py-1 text-emerald-600 animate-in fade-in">
-                     <Calendar className="w-5 h-5" />
-                     <span className="text-sm font-black uppercase tracking-tighter">{today.toLocaleDateString('es-PE', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+                     <input type="date" value={customRange.start} onChange={e => setCustomRange({...customRange, start: e.target.value})} className="p-3 bg-white border border-slate-200 rounded-xl text-xs font-bold shadow-sm" />
+                     <ArrowRight size={16} className="text-slate-300"/>
+                     <input type="date" value={customRange.end} onChange={e => setCustomRange({...customRange, end: e.target.value})} className="p-3 bg-white border border-slate-200 rounded-xl text-xs font-bold shadow-sm" />
                   </div>
                )}
             </div>
          </div>
 
-         {/* SELECTOR DE SEDE INTERNO */}
+         {/* SELECTOR DE SEDE INTEGRADO */}
          <div className="flex bg-slate-50 p-2 rounded-[2.5rem] border border-slate-100 gap-2 w-full lg:w-fit mx-auto shadow-inner">
-            <button onClick={() => setActiveTab('consolidado')} className={`flex-1 lg:flex-none flex items-center justify-center gap-3 px-10 py-4 rounded-[2rem] font-black text-[10px] uppercase tracking-widest transition-all ${activeTab === 'consolidado' ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-100'}`}>
+            <button onClick={() => setActiveTab('consolidado')} className={`flex-1 lg:flex-none flex items-center justify-center gap-3 px-12 py-4 rounded-[2rem] font-black text-[10px] uppercase tracking-widest transition-all ${activeTab === 'consolidado' ? 'bg-slate-900 text-white shadow-xl' : 'text-slate-400 hover:bg-white'}`}>
                 <LayoutGrid className="w-4 h-4" /> Global
             </button>
-            <button onClick={() => setActiveTab('recepcion')} className={`flex-1 lg:flex-none flex items-center justify-center gap-3 px-10 py-4 rounded-[2rem] font-black text-[10px] uppercase tracking-widest transition-all ${activeTab === 'recepcion' ? 'bg-brand-500 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-100'}`}>
+            <button onClick={() => setActiveTab('recepcion')} className={`flex-1 lg:flex-none flex items-center justify-center gap-3 px-12 py-4 rounded-[2rem] font-black text-[10px] uppercase tracking-widest transition-all ${activeTab === 'recepcion' ? 'bg-brand-500 text-white shadow-xl' : 'text-slate-400 hover:bg-white'}`}>
                 <Store className="w-4 h-4" /> FeetCare
             </button>
-            <button onClick={() => setActiveTab('surco')} className={`flex-1 lg:flex-none flex items-center justify-center gap-3 px-10 py-4 rounded-[2rem] font-black text-[10px] uppercase tracking-widest transition-all ${activeTab === 'surco' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-100'}`}>
-                <MapPin className="w-4 h-4" /> Surco
+            <button onClick={() => setActiveTab('surco')} className={`flex-1 lg:flex-none flex items-center justify-center gap-3 px-12 py-4 rounded-[2rem] font-black text-[10px] uppercase tracking-widest transition-all ${activeTab === 'surco' ? 'bg-blue-600 text-white shadow-xl' : 'text-slate-400 hover:bg-white'}`}>
+                <MapPin className="w-4 h-4" /> Feet Surco
             </button>
          </div>
       </div>
 
-      {/* INDICADOR DE CARGA */}
+      {/* ESTADO DE CARGA */}
       {loading && (
-        <div className="bg-brand-500 text-white px-10 py-4 rounded-full w-fit mx-auto flex items-center gap-4 animate-bounce shadow-xl">
+        <div className="bg-brand-500 text-white px-10 py-5 rounded-full w-fit mx-auto flex items-center gap-4 animate-bounce shadow-2xl">
            <Loader2 className="w-5 h-5 animate-spin" />
-           <span className="text-xs font-black uppercase tracking-widest">{syncProgress}</span>
+           <span className="text-xs font-black uppercase tracking-widest italic">{syncProgress}</span>
         </div>
       )}
 
-      {/* KPIs CONTEXTUALES */}
+      {/* KPIs DE RECONCILIACIÓN */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm relative overflow-hidden group hover:border-brand-200 transition-all">
-             <p className="text-slate-400 text-[9px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><ArrowDownToLine className="w-3 h-3"/> Venta del Periodo</p>
+          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm group">
+             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2 group-hover:text-brand-500 transition-colors"><ArrowDownToLine className="w-3 h-3"/> Venta de Caja (Con IGV)</p>
              <h3 className="text-3xl font-black text-slate-900 tracking-tighter">S/ {currentStats.vBruta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
-             <p className="text-[9px] font-bold text-slate-400 mt-2">Neta (Sin IGV): S/ {currentStats.vNeta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</p>
+             <p className="text-[9px] font-bold text-slate-400 mt-2 uppercase tracking-tighter italic">Base Imponible: S/ {currentStats.vNeta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</p>
           </div>
-          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm group">
-             <p className="text-slate-400 text-[9px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><Calculator className="w-3 h-3"/> Inversión en Costos</p>
-             <h3 className="text-3xl font-black text-slate-400 tracking-tighter">S/ {currentStats.costo.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
+          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm">
+             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><Calculator className="w-3 h-3"/> Costo Total de Ventas</p>
+             <h3 className={`text-3xl font-black tracking-tighter ${currentStats.costo === 0 ? 'text-amber-500 animate-pulse' : 'text-slate-400'}`}>S/ {currentStats.costo.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
+             {currentStats.costo === 0 && <p className="text-[8px] font-black text-amber-600 uppercase mt-2">⚠️ Odoo no devuelve costos!</p>}
           </div>
-          <div className={`p-8 rounded-[2.5rem] shadow-xl text-white transition-all duration-500 ${activeTab === 'recepcion' ? 'bg-brand-500' : activeTab === 'surco' ? 'bg-blue-600' : 'bg-slate-900'}`}>
-             <p className="text-white/60 text-[9px] font-black uppercase tracking-widest mb-1">Ganancia Real Auditada</p>
+          <div className={`p-8 rounded-[3rem] shadow-2xl text-white transition-all duration-500 ${activeTab === 'recepcion' ? 'bg-brand-500' : activeTab === 'surco' ? 'bg-blue-600' : 'bg-slate-900'}`}>
+             <p className="text-white/60 text-[10px] font-black uppercase tracking-widest mb-1">Utilidad Real (Auditada)</p>
              <h3 className="text-3xl font-black tracking-tighter">S/ {currentStats.mNeta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
+             <p className="text-[10px] font-black text-white/40 mt-2">Rentabilidad: {currentStats.rent}%</p>
           </div>
-          <div className="bg-white p-8 rounded-[2.5rem] border-4 border-slate-50 flex flex-col justify-center">
-             <p className="text-slate-400 text-[9px] font-black uppercase tracking-widest mb-1">Rentabilidad</p>
-             <h3 className="text-3xl font-black tracking-tighter text-slate-900">{currentStats.rent}%</h3>
+          <div className="bg-brand-50 p-8 rounded-[3rem] border border-brand-100 flex flex-col justify-center">
+             <p className="text-brand-600 text-[10px] font-black uppercase tracking-widest mb-1">Utilidad de Caja (Con IGV)</p>
+             <h3 className="text-3xl font-black tracking-tighter text-brand-700">S/ {currentStats.mBruta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
+             <p className="text-[9px] font-bold text-brand-400 mt-2">Monto disponible para gastos y utilidades.</p>
           </div>
       </div>
 
-      {/* TABLAS DETALLADAS */}
+      {/* REPORTES DETALLADOS */}
       <div className="space-y-4">
          {activeTab === 'consolidado' ? (
            <>
-              <ReportSection data={dataFeetCare} title="Detalle: Sede FeetCare" totals={statsFeetCare} />
-              <ReportSection data={dataFeetSurco} title="Detalle: Sede Surco" totals={statsSurco} />
+              <ReportSection data={dataFeetCare} title="Auditoría: Sede FeetCare" totals={statsFeetCare} />
+              <ReportSection data={dataFeetSurco} title="Auditoría: Sede Surco" totals={statsSurco} />
            </>
          ) : activeTab === 'recepcion' ? (
-           <ReportSection data={dataFeetCare} title="Reporte Sede FeetCare" totals={statsFeetCare} />
+           <ReportSection data={dataFeetCare} title="Detalle Sede FeetCare" totals={statsFeetCare} />
          ) : (
-           <ReportSection data={dataFeetSurco} title="Reporte Sede Surco" totals={statsSurco} />
+           <ReportSection data={dataFeetSurco} title="Detalle Sede Surco" totals={statsSurco} />
          )}
       </div>
 
       {error && (
-        <div className="bg-rose-50 border border-rose-100 p-8 rounded-[3rem] flex items-center gap-6 text-rose-600 animate-in slide-in-from-top-6 shadow-xl">
-          <AlertCircle className="w-8 h-8" />
-          <p className="font-bold text-sm uppercase tracking-tight">{error}</p>
+        <div className="bg-rose-50 border border-rose-100 p-10 rounded-[3rem] flex items-center gap-8 text-rose-600 shadow-2xl animate-in slide-in-from-top-6">
+          <AlertCircle className="w-12 h-12" />
+          <div>
+             <p className="font-black text-sm uppercase tracking-widest mb-1">Fallo de Comunicación con Odoo</p>
+             <p className="text-xs font-medium">{error}</p>
+          </div>
         </div>
       )}
     </div>
