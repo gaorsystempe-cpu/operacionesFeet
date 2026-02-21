@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { 
-  TrendingUp, RefreshCw, AlertCircle, LayoutGrid, Store, MapPin, 
-  Loader2, ArrowDownToLine, Calculator, ShieldCheck, ReceiptText, 
-  Calendar, ChevronLeft, ChevronRight, AlertTriangle, ArrowRight,
-  Clock, Filter, DatabaseZap, SearchSlash, Terminal, FileSpreadsheet
+  RefreshCw, AlertCircle,
+  Loader2, ArrowDownToLine, Calculator, ReceiptText, 
+  ChevronLeft, ChevronRight, AlertTriangle,
+  DatabaseZap, SearchSlash, Terminal, FileSpreadsheet, X, Download
 } from 'lucide-react';
 import { Venta, OdooSession } from '../types';
 import { OdooClient } from '../services/odoo';
@@ -18,23 +18,312 @@ type FilterMode = 'hoy' | 'mes' | 'anio' | 'custom';
 type ReportTab = 'consolidado' | 'recepcion' | 'surco';
 
 // ─────────────────────────────────────────────────────────────
-// ✅ CORRECCIÓN TIMEZONE: Obtiene la fecha actual en Lima (UTC-5)
-// Vercel corre en UTC; sin este ajuste, los filtros de fecha
-// se desplazan 5 horas y traen ventas del día anterior.
+// ✅ TIMEZONE Lima (UTC-5)
 // ─────────────────────────────────────────────────────────────
 const getLimaDate = (): Date => {
   const now = new Date();
-  // UTC-5: restamos 5 horas en milisegundos
   const limaOffset = -5 * 60 * 60 * 1000;
   const utcMs = now.getTime() + now.getTimezoneOffset() * 60 * 1000;
   return new Date(utcMs + limaOffset);
 };
 
-// Convierte una fecha local de Lima a string YYYY-MM-DD
-const limaDateToString = (date: Date): string => {
-  return date.toLocaleDateString('en-CA'); // formato ISO YYYY-MM-DD
+const limaDateToString = (date: Date): string =>
+  date.toLocaleDateString('en-CA');
+
+// ─────────────────────────────────────────────────────────────
+// COMPONENTE: Mini calendario para selección de rango
+// ─────────────────────────────────────────────────────────────
+interface MiniCalendarProps {
+  selecting: 'start' | 'end';
+  rangeStart: string;
+  rangeEnd: string;
+  onSelectDay: (dateStr: string) => void;
+}
+
+const DIAS = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa', 'Do'];
+const MESES_FULL = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+                    'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+const MiniCalendar: React.FC<MiniCalendarProps> = ({ selecting, rangeStart, rangeEnd, onSelectDay }) => {
+  const today = getLimaDate();
+  const [viewYear, setViewYear] = useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(today.getMonth());
+
+  const firstDay = new Date(viewYear, viewMonth, 1);
+  const startOffset = (firstDay.getDay() + 6) % 7; // Monday-based
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+
+  const cells: (number | null)[] = [
+    ...Array(startOffset).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1)
+  ];
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const toStr = (d: number) => {
+    const mm = String(viewMonth + 1).padStart(2, '0');
+    const dd = String(d).padStart(2, '0');
+    return `${viewYear}-${mm}-${dd}`;
+  };
+
+  const isInRange = (d: number) => {
+    if (!rangeStart || !rangeEnd) return false;
+    const s = toStr(d);
+    return s > rangeStart && s < rangeEnd;
+  };
+  const isStart   = (d: number) => !!rangeStart && toStr(d) === rangeStart;
+  const isEnd     = (d: number) => !!rangeEnd   && toStr(d) === rangeEnd;
+  const isToday   = (d: number) => toStr(d) === limaDateToString(today);
+
+  const prevMonth = () => {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); }
+    else setViewMonth(m => m - 1);
+  };
+  const nextMonth = () => {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); }
+    else setViewMonth(m => m + 1);
+  };
+
+  return (
+    <div className="select-none">
+      <div className="flex items-center justify-between mb-4">
+        <button onClick={prevMonth} className="p-2 hover:bg-slate-200 rounded-xl transition-all text-slate-500">
+          <ChevronLeft size={16}/>
+        </button>
+        <span className="text-sm font-black text-slate-900 uppercase tracking-tight">
+          {MESES_FULL[viewMonth]} {viewYear}
+        </span>
+        <button onClick={nextMonth} className="p-2 hover:bg-slate-200 rounded-xl transition-all text-slate-500">
+          <ChevronRight size={16}/>
+        </button>
+      </div>
+
+      <div className="grid grid-cols-7 mb-2">
+        {DIAS.map(d => (
+          <div key={d} className="text-center text-[10px] font-black text-slate-400 uppercase py-1">{d}</div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-7 gap-y-1">
+        {cells.map((day, i) => {
+          if (!day) return <div key={i} />;
+          const start   = isStart(day);
+          const end     = isEnd(day);
+          const inRange = isInRange(day);
+          const todayMk = isToday(day);
+          return (
+            <button
+              key={i}
+              onClick={() => onSelectDay(toStr(day))}
+              className={`
+                text-[12px] font-bold py-1.5 rounded-lg transition-all w-full
+                ${start || end
+                  ? 'bg-brand-500 text-white font-black shadow-md'
+                  : inRange
+                    ? 'bg-brand-100 text-brand-800'
+                    : 'hover:bg-slate-200 text-slate-700'}
+                ${todayMk && !start && !end ? 'ring-2 ring-brand-400 ring-offset-1' : ''}
+              `}
+            >
+              {day}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 };
 
+// ─────────────────────────────────────────────────────────────
+// COMPONENTE: Modal de exportación con selector de rango
+// ─────────────────────────────────────────────────────────────
+interface ExportModalProps {
+  onClose: () => void;
+  onExport: (start: string, end: string, label: string) => void;
+  allData: Venta[];
+}
+
+const ExportModal: React.FC<ExportModalProps> = ({ onClose, onExport, allData }) => {
+  const today      = getLimaDate();
+  const todayStr   = limaDateToString(today);
+  const yesterdayStr = limaDateToString(new Date(today.getTime() - 86400000));
+
+  const [rangeStart, setRangeStart] = useState('');
+  const [rangeEnd,   setRangeEnd]   = useState('');
+  const [selecting,  setSelecting]  = useState<'start' | 'end'>('start');
+
+  const quickSets = [
+    { label: 'Hoy',    start: todayStr,     end: todayStr },
+    { label: 'Ayer',   start: yesterdayStr, end: yesterdayStr },
+    {
+      label: 'Esta semana',
+      start: (() => {
+        const d = new Date(today);
+        d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+        return limaDateToString(d);
+      })(),
+      end: todayStr
+    },
+    {
+      label: 'Este mes',
+      start: `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-01`,
+      end: todayStr
+    },
+    {
+      label: 'Mes anterior',
+      start: limaDateToString(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+      end:   limaDateToString(new Date(today.getFullYear(), today.getMonth(), 0))
+    },
+  ];
+
+  const handleSelectDay = (dateStr: string) => {
+    if (selecting === 'start') {
+      setRangeStart(dateStr);
+      setRangeEnd('');
+      setSelecting('end');
+    } else {
+      if (dateStr < rangeStart) {
+        setRangeEnd(rangeStart);
+        setRangeStart(dateStr);
+      } else {
+        setRangeEnd(dateStr);
+      }
+      setSelecting('start');
+    }
+  };
+
+  const handleQuick = (start: string, end: string) => {
+    setRangeStart(start);
+    setRangeEnd(end);
+    setSelecting('start');
+  };
+
+  const filteredCount = useMemo(() => {
+    if (!rangeStart || !rangeEnd) return 0;
+    return allData.filter(v => {
+      const ds = limaDateToString(v.fecha);
+      return ds >= rangeStart && ds <= rangeEnd;
+    }).length;
+  }, [allData, rangeStart, rangeEnd]);
+
+  const rangeLabel = rangeStart && rangeEnd
+    ? rangeStart === rangeEnd ? rangeStart : `${rangeStart} → ${rangeEnd}`
+    : rangeStart ? `Desde ${rangeStart}…` : 'Sin selección';
+
+  const canExport = !!(rangeStart && rangeEnd && filteredCount > 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm">
+      <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-xl overflow-hidden animate-in fade-in slide-in-from-bottom-8">
+
+        {/* Header */}
+        <div className="bg-slate-900 px-10 py-7 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-brand-500/20 rounded-2xl">
+              <FileSpreadsheet className="w-6 h-6 text-brand-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-black text-white uppercase tracking-tighter">Exportar Excel</h2>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">Selecciona el rango de fechas</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-xl transition-all text-slate-400 hover:text-white">
+            <X size={20}/>
+          </button>
+        </div>
+
+        <div className="p-8 space-y-5">
+
+          {/* Accesos rápidos */}
+          <div>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Acceso Rápido</p>
+            <div className="flex flex-wrap gap-2">
+              {quickSets.map(q => (
+                <button
+                  key={q.label}
+                  onClick={() => handleQuick(q.start, q.end)}
+                  className={`px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wide transition-all border
+                    ${rangeStart === q.start && rangeEnd === q.end
+                      ? 'bg-brand-500 text-white border-brand-500 shadow-md shadow-brand-500/30'
+                      : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-brand-400 hover:text-brand-600'}`}
+                >
+                  {q.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Indicadores inicio / fin */}
+          <div className="flex gap-3">
+            <div
+              onClick={() => setSelecting('start')}
+              className={`flex-1 p-4 rounded-2xl border-2 cursor-pointer transition-all
+                ${selecting === 'start' ? 'border-brand-500 bg-brand-50' : 'border-slate-200 bg-slate-50'}`}
+            >
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">📅 Fecha Inicio</p>
+              <p className={`text-sm font-black ${rangeStart ? 'text-slate-900' : 'text-slate-300'}`}>
+                {rangeStart || 'Toca un día…'}
+              </p>
+            </div>
+            <div className="flex items-center text-slate-300 font-black text-xl select-none">→</div>
+            <div
+              onClick={() => rangeStart && setSelecting('end')}
+              className={`flex-1 p-4 rounded-2xl border-2 cursor-pointer transition-all
+                ${selecting === 'end' ? 'border-brand-500 bg-brand-50' : 'border-slate-200 bg-slate-50'}`}
+            >
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">🏁 Fecha Fin</p>
+              <p className={`text-sm font-black ${rangeEnd ? 'text-slate-900' : 'text-slate-300'}`}>
+                {rangeEnd || 'Toca un día…'}
+              </p>
+            </div>
+          </div>
+
+          {/* Instrucción dinámica */}
+          <p className="text-[11px] font-black text-brand-600 uppercase tracking-widest text-center">
+            {selecting === 'start'
+              ? '👆 Selecciona el día de INICIO en el calendario'
+              : '👆 Ahora selecciona el día de FIN'}
+          </p>
+
+          {/* Calendario */}
+          <div className="bg-slate-50 rounded-2xl p-5 border border-slate-100">
+            <MiniCalendar
+              selecting={selecting}
+              rangeStart={rangeStart}
+              rangeEnd={rangeEnd}
+              onSelectDay={handleSelectDay}
+            />
+          </div>
+
+          {/* Pie modal: resumen + botón */}
+          <div className="flex items-center justify-between bg-slate-900 rounded-2xl px-8 py-5">
+            <div>
+              <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Período</p>
+              <p className="text-sm font-black text-white mt-0.5">{rangeLabel}</p>
+              {rangeStart && rangeEnd && (
+                <p className={`text-[10px] font-bold mt-1 ${filteredCount > 0 ? 'text-brand-400' : 'text-rose-400'}`}>
+                  {filteredCount > 0 ? `${filteredCount} registros` : 'Sin registros en este rango'}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => canExport && onExport(rangeStart, rangeEnd, rangeLabel)}
+              disabled={!canExport}
+              className="flex items-center gap-3 bg-brand-500 text-white px-8 py-4 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-brand-600 transition-all shadow-lg shadow-brand-500/30 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
+            >
+              <Download size={16}/> Descargar
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+// ─────────────────────────────────────────────────────────────
+// COMPONENTE PRINCIPAL: Dashboard
+// ─────────────────────────────────────────────────────────────
 const Dashboard: React.FC<DashboardProps> = ({ session }) => {
   const [ventasData, setVentasData] = useState<Venta[]>([]); 
   const [loading, setLoading] = useState(false);
@@ -42,33 +331,30 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
   const [filterMode, setFilterMode] = useState<FilterMode>('mes');
   const [activeTab, setActiveTab] = useState<ReportTab>('consolidado');
   const [syncProgress, setSyncProgress] = useState('');
+  const [showExportModal, setShowExportModal] = useState(false);
   
-  // ✅ Usamos getLimaDate() en lugar de new Date() para que "hoy"
-  //    sea siempre la fecha correcta en Lima, independientemente
-  //    del servidor donde corra Vercel.
   const today = getLimaDate();
   const [selectedMonth, setSelectedMonth] = useState(today.getMonth());
-  const [selectedYear, setSelectedYear] = useState(today.getFullYear());
+  const [selectedYear,  setSelectedYear]  = useState(today.getFullYear());
   const [customRange, setCustomRange] = useState({
     start: new Date(today.getFullYear(), today.getMonth(), 1).toLocaleDateString('en-CA'),
-    end: limaDateToString(today)
+    end:   limaDateToString(today)
   });
 
   const dateRange = useMemo(() => {
-    let start = '';
-    let end = '';
+    let start = '', end = '';
     if (filterMode === 'hoy') {
-      start = limaDateToString(getLimaDate()); // ✅ Recalcula en cada render
+      start = limaDateToString(getLimaDate());
       end = start;
     } else if (filterMode === 'mes') {
       start = new Date(selectedYear, selectedMonth, 1).toLocaleDateString('en-CA');
-      end = new Date(selectedYear, selectedMonth + 1, 0).toLocaleDateString('en-CA');
+      end   = new Date(selectedYear, selectedMonth + 1, 0).toLocaleDateString('en-CA');
     } else if (filterMode === 'anio') {
       start = `${selectedYear}-01-01`;
-      end = `${selectedYear}-12-31`;
+      end   = `${selectedYear}-12-31`;
     } else {
       start = customRange.start;
-      end = customRange.end;
+      end   = customRange.end;
     }
     return { start, end };
   }, [filterMode, selectedMonth, selectedYear, customRange]);
@@ -78,7 +364,6 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
       setLoading(true);
       setError(null);
       setSyncProgress('Autenticando Odoo 14...');
-
       try {
           const client = new OdooClient(session.url, session.db);
           const odooContext = { 
@@ -87,25 +372,12 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
             allowed_company_ids: [session.companyId],
             pricelist: 1 
           };
-          
           setSyncProgress('Extrayendo Pedidos...');
-
-          // ─────────────────────────────────────────────────────────────
-          // ✅ CORRECCIÓN TIMEZONE en el dominio de búsqueda a Odoo:
-          //
-          //    Odoo almacena date_order en UTC.
-          //    Lima = UTC-5, por lo tanto:
-          //      00:00:00 Lima  →  05:00:00 UTC
-          //      23:59:59 Lima  →  04:59:59 UTC del día SIGUIENTE
-          //
-          //    Si enviamos '2026-02-21 00:00:00' sin ajuste, Odoo
-          //    interpreta ese rango en UTC y trae ventas del 20/02
-          //    desde las 19:00 Lima en adelante — ventas de AYER.
-          // ─────────────────────────────────────────────────────────────
+          // ✅ TIMEZONE CORREGIDO: Lima = UTC-5
           const domain: any[] = [
             ['state', 'in', ['paid', 'done', 'invoiced']], 
-            ['date_order', '>=', `${dateRange.start} 05:00:00`], // 00:00 Lima = 05:00 UTC
-            ['date_order', '<=', `${dateRange.end} 04:59:59`]   // 23:59 Lima = 04:59 UTC día siguiente
+            ['date_order', '>=', `${dateRange.start} 05:00:00`],
+            ['date_order', '<=', `${dateRange.end} 04:59:59`]
           ];
           if (session.companyId) domain.push(['company_id', '=', session.companyId]);
 
@@ -123,7 +395,6 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
 
           setSyncProgress(`Analizando ${orders.length} pedidos...`);
           const allLineIds = orders.flatMap((o: any) => o.lines || []);
-          
           const linesData = await client.searchRead(session.uid, session.apiKey, 'pos.order.line', 
             [['id', 'in', allLineIds]], 
             ['product_id', 'qty', 'price_subtotal', 'price_subtotal_incl', 'order_id'],
@@ -131,7 +402,6 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
           );
 
           const productIds = Array.from(new Set(linesData.map((l: any) => l.product_id[0])));
-          
           setSyncProgress('Recuperando Costos Reales...');
           const products = await client.searchRead(
             session.uid, session.apiKey, 'product.product', 
@@ -162,10 +432,7 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
               if (cost === 0 && templateCosts.has(p.product_tmpl_id[0])) {
                 cost = templateCosts.get(p.product_tmpl_id[0]) || 0;
               }
-              productMap.set(p.id, { 
-                cost, 
-                cat: Array.isArray(p.categ_id) ? p.categ_id[1] : 'S/C' 
-              });
+              productMap.set(p.id, { cost, cat: Array.isArray(p.categ_id) ? p.categ_id[1] : 'S/C' });
           });
           
           const linesByOrder = new Map();
@@ -177,19 +444,15 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
 
           const mapped: Venta[] = orders.flatMap((o: any) => {
               const orderLines = linesByOrder.get(o.id) || [];
-              // ✅ Odoo devuelve date_order en UTC; convertimos a hora Lima para mostrar
+              // ✅ Convertir date_order (UTC) a hora Lima
               const orderDateUTC = new Date(o.date_order.replace(' ', 'T') + 'Z');
-              const orderDate = new Date(orderDateUTC.getTime() - 5 * 60 * 60 * 1000);
+              const orderDate    = new Date(orderDateUTC.getTime() - 5 * 60 * 60 * 1000);
               const sede = Array.isArray(o.config_id) ? o.config_id[1] : 'Caja Central';
-
               return orderLines.map((l: any) => {
-                  const pId = l.product_id[0];
-                  const pInfo = productMap.get(pId) || { cost: 0, cat: 'S/C' };
-                  
-                  const ventaNeta = l.price_subtotal || 0; 
+                  const pInfo    = productMap.get(l.product_id[0]) || { cost: 0, cat: 'S/C' };
+                  const ventaNeta  = l.price_subtotal || 0; 
                   const ventaTotal = l.price_subtotal_incl || 0;
                   const costoTotal = pInfo.cost * l.qty;
-                  
                   return {
                       fecha: orderDate,
                       sede,
@@ -222,147 +485,158 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const stats = useMemo(() => {
-    const filterBySede = (data: Venta[], name: string) => data.filter(v => v.sede.toUpperCase().includes(name.toUpperCase()));
-    const dataFC = filterBySede(ventasData, 'FEETCARE').concat(filterBySede(ventasData, 'RECEPCION'));
+    const filterBySede = (data: Venta[], name: string) =>
+      data.filter(v => v.sede.toUpperCase().includes(name.toUpperCase()));
+    const dataFC    = filterBySede(ventasData, 'FEETCARE').concat(filterBySede(ventasData, 'RECEPCION'));
     const dataSurco = filterBySede(ventasData, 'SURCO');
 
     const calc = (d: Venta[]) => {
       const vBruta = d.reduce((s, x) => s + x.total, 0);
-      const vNeta = d.reduce((s, x) => s + x.subtotal, 0);
-      const cost = d.reduce((s, x) => s + x.costo, 0);
-      const mNeta = d.reduce((s, x) => s + x.margen, 0);
+      const vNeta  = d.reduce((s, x) => s + x.subtotal, 0);
+      const cost   = d.reduce((s, x) => s + x.costo, 0);
+      const mNeta  = d.reduce((s, x) => s + x.margen, 0);
       const mBruta = d.reduce((s, x) => s + x.margenBruto, 0);
-      const items = d.reduce((s, x) => s + x.cantidad, 0);
-      return { 
-        vBruta, vNeta, cost, mNeta, mBruta, items,
+      const items  = d.reduce((s, x) => s + x.cantidad, 0);
+      return { vBruta, vNeta, cost, mNeta, mBruta, items,
         rent: vNeta > 0 ? ((mNeta / vNeta) * 100).toFixed(1) : '0.0',
-        missingCosts: d.filter(x => x.costo <= 0).length
-      };
+        missingCosts: d.filter(x => x.costo <= 0).length };
     };
-
-    return {
-      global: calc(ventasData),
-      feetcare: calc(dataFC),
-      surco: calc(dataSurco),
-      dataFC, dataSurco
-    };
+    return { global: calc(ventasData), feetcare: calc(dataFC), surco: calc(dataSurco), dataFC, dataSurco };
   }, [ventasData]);
 
-  const exportToExcel = () => {
-    const wb = XLSX.utils.book_new();
-    const meses = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
-    const periodStr = `${meses[selectedMonth]} ${selectedYear}`;
-
-    // 1. RESUMEN GENERAL
-    const resumenAoa = [
-      ["LEMON BI ANALYTICS - REPORTE DE VENTAS Y RENTABILIDAD"],
-      [`${periodStr} | PERÍODO: ${filterMode.toUpperCase()}`],
-      [],
-      ["TOTAL VENTAS (CON IGV)", "TOTAL VENTAS (SIN IGV)", "GANANCIA REAL AUDITADA"],
-      [stats.global.vBruta, stats.global.vNeta, stats.global.mNeta],
-      [],
-      ["SEDE", "ÍTEMS VENDIDOS", "VENTA C/IGV (S/)", "VENTA S/IGV (S/)", "COSTO TOTAL (S/)", "UTILIDAD (S/)", "RENT %", "TICKET PROM (S/)"],
-      ["SEDE SURCO", stats.surco.items, stats.surco.vBruta, stats.surco.vNeta, stats.surco.cost, stats.surco.mNeta, stats.surco.rent + "%", stats.surco.vBruta / (stats.surco.items || 1)],
-      ["SEDE FEETCARE", stats.feetcare.items, stats.feetcare.vBruta, stats.feetcare.vNeta, stats.feetcare.cost, stats.feetcare.mNeta, stats.feetcare.rent + "%", stats.feetcare.vBruta / (stats.feetcare.items || 1)],
-      ["TOTAL GENERAL", stats.global.items, stats.global.vBruta, stats.global.vNeta, stats.global.cost, stats.global.mNeta, stats.global.rent + "%", stats.global.vBruta / (stats.global.items || 1)],
-      [],
-      ["PARTICIPACIÓN EN VENTAS POR SEDE"],
-      ["SEDE", "PARTICIPACIÓN EN VENTA", "PARTICIPACIÓN EN UTIL.", "DIFERENCIA"],
-      ["SEDE SURCO", (stats.surco.vBruta / (stats.global.vBruta || 1) * 100).toFixed(1) + "%", (stats.surco.mNeta / (stats.global.mNeta || 1) * 100).toFixed(1) + "%", ((stats.surco.mNeta / (stats.global.mNeta || 1)) - (stats.surco.vBruta / (stats.global.vBruta || 1))).toFixed(2) + "%"],
-      ["SEDE FEETCARE", (stats.feetcare.vBruta / (stats.global.vBruta || 1) * 100).toFixed(1) + "%", (stats.feetcare.mNeta / (stats.global.mNeta || 1) * 100).toFixed(1) + "%", ((stats.feetcare.mNeta / (stats.global.mNeta || 1)) - (stats.feetcare.vBruta / (stats.global.vBruta || 1))).toFixed(2) + "%"],
-    ];
-    const wsResumen = XLSX.utils.aoa_to_sheet(resumenAoa);
-    XLSX.utils.book_append_sheet(wb, wsResumen, "Resumen General");
-
-    // 2 & 3. DETALLE POR SEDE (SURCO y FEETCARE)
-    const createSedeSheet = (name: string, data: Venta[], statsSede: any) => {
-      const aoa = [
-        [`LEMON BI - REPORTE DETALLADO SEDE ${name.toUpperCase()} | ${periodStr}`],
-        ["SEDE", "ÍTEMS", "VENTA C/IGV", "VENTA S/IGV", "COSTO TOTAL", "UTILIDAD", "RENT %", "TICKET PROM"],
-        [name, statsSede.items, statsSede.vBruta, statsSede.vNeta, statsSede.cost, statsSede.mNeta, statsSede.rent + "%", statsSede.vBruta / (statsSede.items || 1)],
-        [],
-        ["PRODUCTO / SERVICIO", "FECHA", "MÉTODO PAGO", "MONTO S/IGV", "COSTO (ODOO)", "UTILIDAD", "RENT %", "MONTO C/IGV"],
-        ...data.map(v => [
-          v.producto, v.fecha.toLocaleDateString(), v.metodoPago, v.subtotal, v.costo, v.margen, v.margenPorcentaje + "%", v.total
-        ])
-      ];
-      return XLSX.utils.aoa_to_sheet(aoa);
-    };
-    XLSX.utils.book_append_sheet(wb, createSedeSheet("SURCO", stats.dataSurco, stats.surco), "Surco");
-    XLSX.utils.book_append_sheet(wb, createSedeSheet("FEETCARE", stats.dataFC, stats.feetcare), "Feetcare");
-
-    // 4. ANÁLISIS POR PRODUCTO
-    const prodMap = new Map();
-    ventasData.forEach(v => {
-      if (!prodMap.has(v.producto)) prodMap.set(v.producto, { cant: 0, vNeta: 0, cost: 0, mNeta: 0 });
-      const curr = prodMap.get(v.producto);
-      curr.cant += v.cantidad;
-      curr.vNeta += v.subtotal;
-      curr.cost += v.costo;
-      curr.mNeta += v.margen;
+  // ─────────────────────────────────────────────────────────────
+  // Exportar con el rango elegido en el modal
+  // ─────────────────────────────────────────────────────────────
+  const handleExport = (start: string, end: string, label: string) => {
+    const filtered = ventasData.filter(v => {
+      const ds = limaDateToString(v.fecha);
+      return ds >= start && ds <= end;
     });
-    const prodAoa = [
-      [`ANÁLISIS DE VENTAS POR PRODUCTO / SERVICIO | ${periodStr}`],
-      ["PRODUCTO / SERVICIO", "VECES VENDIDO", "INGRESO TOTAL S/IGV", "COSTO TOTAL", "UTILIDAD TOTAL", "RENT %", "PRECIO PROM"],
-      ...Array.from(prodMap.entries()).map(([name, s]) => [
-        name, s.cant, s.vNeta, s.cost, s.mNeta, (s.vNeta > 0 ? (s.mNeta / s.vNeta * 100).toFixed(1) : '0') + "%", s.vNeta / (s.cant || 1)
+
+    const byS = (data: Venta[], name: string) =>
+      data.filter(v => v.sede.toUpperCase().includes(name.toUpperCase()));
+    const dataFC    = byS(filtered, 'FEETCARE').concat(byS(filtered, 'RECEPCION'));
+    const dataSurco = byS(filtered, 'SURCO');
+
+    const cs = (d: Venta[]) => {
+      const vB = d.reduce((s,x) => s+x.total, 0);
+      const vN = d.reduce((s,x) => s+x.subtotal, 0);
+      const co = d.reduce((s,x) => s+x.costo, 0);
+      const mN = d.reduce((s,x) => s+x.margen, 0);
+      const it = d.reduce((s,x) => s+x.cantidad, 0);
+      return { vB, vN, co, mN, it, rent: vN>0 ? ((mN/vN)*100).toFixed(1) : '0.0' };
+    };
+    const sg = cs(filtered), sf = cs(dataFC), ss = cs(dataSurco);
+
+    const wb = XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      ['LEMON BI ANALYTICS — REPORTE DE VENTAS Y RENTABILIDAD'],
+      [`PERÍODO: ${label.toUpperCase()}`],
+      [],
+      ['TOTAL VENTAS (CON IGV)', 'TOTAL VENTAS (SIN IGV)', 'GANANCIA REAL AUDITADA'],
+      [sg.vB, sg.vN, sg.mN],
+      [],
+      ['SEDE','ÍTEMS','VENTA C/IGV','VENTA S/IGV','COSTO TOTAL','UTILIDAD','RENT %','TICKET PROM'],
+      ['SEDE SURCO',   ss.it, ss.vB, ss.vN, ss.co, ss.mN, ss.rent+'%', ss.vB/(ss.it||1)],
+      ['SEDE FEETCARE',sf.it, sf.vB, sf.vN, sf.co, sf.mN, sf.rent+'%', sf.vB/(sf.it||1)],
+      ['TOTAL GENERAL',sg.it, sg.vB, sg.vN, sg.co, sg.mN, sg.rent+'%', sg.vB/(sg.it||1)],
+    ]), 'Resumen General');
+
+    const sedeSheet = (name: string, data: Venta[], s: any) => XLSX.utils.aoa_to_sheet([
+      [`LEMON BI — REPORTE DETALLADO ${name.toUpperCase()} | ${label.toUpperCase()}`],
+      ['SEDE','ÍTEMS','VENTA C/IGV','VENTA S/IGV','COSTO TOTAL','UTILIDAD','RENT %','TICKET PROM'],
+      [name, s.it, s.vB, s.vN, s.co, s.mN, s.rent+'%', s.vB/(s.it||1)],
+      [],
+      ['PRODUCTO / SERVICIO','FECHA','MÉTODO PAGO','MONTO S/IGV','COSTO (ODOO)','UTILIDAD','RENT %','MONTO C/IGV'],
+      ...data.map(v => [v.producto, v.fecha.toLocaleDateString('es-PE'), v.metodoPago,
+                        v.subtotal, v.costo, v.margen, v.margenPorcentaje+'%', v.total])
+    ]);
+    XLSX.utils.book_append_sheet(wb, sedeSheet('SURCO',   dataSurco, ss), 'Surco');
+    XLSX.utils.book_append_sheet(wb, sedeSheet('FEETCARE',dataFC,    sf), 'Feetcare');
+
+    const pm = new Map<string, any>();
+    filtered.forEach(v => {
+      if (!pm.has(v.producto)) pm.set(v.producto, { cant:0, vN:0, co:0, mN:0 });
+      const c = pm.get(v.producto);
+      c.cant += v.cantidad; c.vN += v.subtotal; c.co += v.costo; c.mN += v.margen;
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      [`ANÁLISIS POR PRODUCTO | ${label.toUpperCase()}`],
+      ['PRODUCTO / SERVICIO','VECES VENDIDO','INGRESO S/IGV','COSTO TOTAL','UTILIDAD','RENT %','PRECIO PROM'],
+      ...Array.from(pm.entries()).map(([n, s]) => [
+        n, s.cant, s.vN, s.co, s.mN,
+        (s.vN>0 ? (s.mN/s.vN*100).toFixed(1) : '0')+'%', s.vN/(s.cant||1)
       ]),
-      ["TOTAL", stats.global.items, stats.global.vNeta, stats.global.cost, stats.global.mNeta, stats.global.rent + "%", stats.global.vNeta / (stats.global.items || 1)]
-    ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(prodAoa), "Por Producto");
+    ]), 'Por Producto');
 
-    // 5. MÉTODOS DE PAGO
-    const payAoa = [
-      [`ANÁLISIS POR MÉTODO DE PAGO | ${periodStr}`],
-      ["MÉTODO DE PAGO", "CANTIDAD TRANSACCIONES", "MONTO TOTAL C/IGV", "MONTO TOTAL S/IGV", "% DEL TOTAL"],
-      ["Efectivo", ventasData.length, stats.global.vBruta, stats.global.vNeta, "100.0%"],
-      ["TOTAL", ventasData.length, stats.global.vBruta, stats.global.vNeta, "100.0%"]
-    ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(payAoa), "Métodos de Pago");
-
-    XLSX.writeFile(wb, `REPORTE_LEMON_BI_${periodStr.replace(' ', '_')}.xlsx`);
+    const fileLabel = label.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
+    XLSX.writeFile(wb, `LEMON_BI_${fileLabel}.xlsx`);
+    setShowExportModal(false);
   };
 
   const currentStats = activeTab === 'recepcion' ? stats.feetcare : activeTab === 'surco' ? stats.surco : stats.global;
-  const currentData = activeTab === 'recepcion' ? stats.dataFC : activeTab === 'surco' ? stats.dataSurco : ventasData;
-
-  const mesesStr = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+  const currentData  = activeTab === 'recepcion' ? stats.dataFC   : activeTab === 'surco' ? stats.dataSurco : ventasData;
+  const mesesStr = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
   return (
     <div className="p-4 md:p-8 font-sans max-w-7xl mx-auto space-y-8 animate-in fade-in pb-32">
+
+      {/* ✅ MODAL EXPORTAR */}
+      {showExportModal && (
+        <ExportModal
+          onClose={() => setShowExportModal(false)}
+          onExport={handleExport}
+          allData={ventasData}
+        />
+      )}
       
-      {/* HEADER DE AUDITORÍA */}
+      {/* HEADER */}
       <div className="bg-white p-8 rounded-[3rem] shadow-2xl border border-slate-100 space-y-8">
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6">
           <div className="flex items-center gap-4">
-             <div className="p-4 bg-slate-900 rounded-3xl shadow-xl shadow-brand-500/10"><DatabaseZap className="text-brand-400 w-8 h-8" /></div>
+             <div className="p-4 bg-slate-900 rounded-3xl shadow-xl shadow-brand-500/10">
+               <DatabaseZap className="text-brand-400 w-8 h-8" />
+             </div>
              <div>
-                <h1 className="text-4xl font-black text-slate-900 uppercase tracking-tighter italic leading-none">Lemon BI <span className="text-brand-500">Analytics</span></h1>
+                <h1 className="text-4xl font-black text-slate-900 uppercase tracking-tighter italic leading-none">
+                  Lemon BI <span className="text-brand-500">Analytics</span>
+                </h1>
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2 flex items-center gap-2">
                   <Terminal size={12} className="text-brand-500"/> Inteligencia de Negocio Podológico
                 </p>
              </div>
           </div>
           <div className="flex flex-wrap gap-3 w-full lg:w-auto">
-            <button onClick={exportToExcel} disabled={ventasData.length === 0} className="flex-1 lg:flex-none flex items-center justify-center gap-3 bg-slate-900 text-white px-8 py-5 rounded-2xl font-black text-xs hover:bg-slate-800 transition-all uppercase tracking-widest shadow-xl shadow-slate-900/10 disabled:opacity-50">
+            {/* ✅ Abre modal de exportación */}
+            <button
+              onClick={() => setShowExportModal(true)}
+              disabled={ventasData.length === 0}
+              className="flex-1 lg:flex-none flex items-center justify-center gap-3 bg-slate-900 text-white px-8 py-5 rounded-2xl font-black text-xs hover:bg-slate-800 transition-all uppercase tracking-widest shadow-xl shadow-slate-900/10 disabled:opacity-50"
+            >
                <FileSpreadsheet className="w-5 h-5 text-emerald-400" /> Exportar Excel
             </button>
-            <button onClick={fetchData} disabled={loading} className="flex-1 lg:flex-none flex items-center justify-center gap-3 bg-brand-500 text-white px-8 py-5 rounded-2xl font-black text-xs hover:bg-brand-600 transition-all uppercase tracking-widest shadow-xl shadow-brand-500/20">
+            <button
+              onClick={fetchData}
+              disabled={loading}
+              className="flex-1 lg:flex-none flex items-center justify-center gap-3 bg-brand-500 text-white px-8 py-5 rounded-2xl font-black text-xs hover:bg-brand-600 transition-all uppercase tracking-widest shadow-xl shadow-brand-500/20"
+            >
                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Sincronizar
             </button>
           </div>
         </div>
 
-        {/* SELECTORES DE TIEMPO */}
+        {/* FILTROS PANTALLA */}
         <div className="flex flex-col md:flex-row items-center justify-between gap-6 p-2 bg-slate-50 rounded-[2.5rem] border border-slate-100">
            <div className="flex bg-white p-1.5 rounded-2xl shadow-inner w-full md:w-auto">
              {(['hoy', 'mes', 'anio', 'custom'] as FilterMode[]).map(m => (
-               <button key={m} onClick={() => setFilterMode(m)} className={`px-8 py-3.5 rounded-xl text-[10px] font-black uppercase transition-all ${filterMode === m ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}>
+               <button key={m} onClick={() => setFilterMode(m)}
+                 className={`px-8 py-3.5 rounded-xl text-[10px] font-black uppercase transition-all
+                   ${filterMode === m ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}>
                   {m === 'hoy' ? 'HOY' : m === 'mes' ? 'MES' : m === 'anio' ? 'AÑO' : 'RANGO'}
                </button>
              ))}
            </div>
-
            <div className="flex items-center gap-6 px-10">
               {filterMode === 'mes' && (
                 <div className="flex items-center gap-8">
@@ -371,21 +645,32 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
                    <button onClick={() => setSelectedMonth(m => m === 11 ? 0 : m + 1)} className="p-2 hover:bg-white rounded-full transition-all text-slate-400"><ChevronRight/></button>
                 </div>
               )}
-              {filterMode === 'hoy' && <span className="text-sm font-black text-brand-600 uppercase italic">Fecha: {limaDateToString(getLimaDate())}</span>}
+              {filterMode === 'hoy' && (
+                <span className="text-sm font-black text-brand-600 uppercase italic">
+                  Fecha: {limaDateToString(getLimaDate())}
+                </span>
+              )}
            </div>
         </div>
       </div>
 
-      {/* KPIs DE RESULTADOS */}
+      {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm relative overflow-hidden group">
-             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><ArrowDownToLine className="w-3 h-3"/> Venta Bruta (Con IGV)</p>
-             <h3 className="text-4xl font-black text-slate-900 tracking-tighter">S/ {currentStats.vBruta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
-             <div className="absolute top-0 right-0 w-24 h-24 bg-brand-50 rounded-bl-[4rem] flex items-center justify-center -mr-8 -mt-8 opacity-20"><ArrowDownToLine className="text-brand-500 w-8 h-8 ml-2 mt-2" /></div>
+          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm relative overflow-hidden">
+             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2">
+               <ArrowDownToLine className="w-3 h-3"/> Venta Bruta (Con IGV)
+             </p>
+             <h3 className="text-4xl font-black text-slate-900 tracking-tighter">
+               S/ {currentStats.vBruta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+             </h3>
           </div>
-          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm transition-all group">
-             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><Calculator className="w-3 h-3"/> Inversión / Costo Total</p>
-             <h3 className={`text-4xl font-black tracking-tighter ${currentStats.cost === 0 ? 'text-rose-500' : 'text-slate-900'}`}>S/ {currentStats.cost.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
+          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-sm">
+             <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2">
+               <Calculator className="w-3 h-3"/> Inversión / Costo Total
+             </p>
+             <h3 className={`text-4xl font-black tracking-tighter ${currentStats.cost === 0 ? 'text-rose-500' : 'text-slate-900'}`}>
+               S/ {currentStats.cost.toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+             </h3>
              {currentStats.missingCosts > 0 && (
                <p className="text-[9px] font-black text-rose-600 mt-2 uppercase flex items-center gap-1.5 animate-pulse">
                  <AlertTriangle size={12}/> {currentStats.missingCosts} productos sin costo
@@ -394,7 +679,9 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
           </div>
           <div className="bg-slate-900 p-8 rounded-[3rem] shadow-2xl text-white">
              <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-1">Ganancia Neta Auditada</p>
-             <h3 className="text-4xl font-black tracking-tighter text-brand-400">S/ {currentStats.mNeta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}</h3>
+             <h3 className="text-4xl font-black tracking-tighter text-brand-400">
+               S/ {currentStats.mNeta.toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+             </h3>
              <p className="text-[10px] font-black text-white/30 mt-2 uppercase">Rentabilidad Media: {currentStats.rent}%</p>
           </div>
           <div className="bg-emerald-600 p-8 rounded-[3rem] shadow-xl shadow-emerald-600/20 text-white">
@@ -404,11 +691,13 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
           </div>
       </div>
 
-      {/* TABLA DE AUDITORÍA */}
+      {/* TABLA */}
       <div className="space-y-8">
         <div className="flex bg-slate-100 p-1.5 rounded-full border border-slate-200 gap-2 w-fit mx-auto shadow-inner">
             {(['consolidado', 'recepcion', 'surco'] as ReportTab[]).map(tab => (
-              <button key={tab} onClick={() => setActiveTab(tab)} className={`px-12 py-4 rounded-full font-black text-[10px] uppercase tracking-widest transition-all ${activeTab === tab ? 'bg-slate-900 text-white shadow-xl' : 'text-slate-400 hover:text-slate-600'}`}>
+              <button key={tab} onClick={() => setActiveTab(tab)}
+                className={`px-12 py-4 rounded-full font-black text-[10px] uppercase tracking-widest transition-all
+                  ${activeTab === tab ? 'bg-slate-900 text-white shadow-xl' : 'text-slate-400 hover:text-slate-600'}`}>
                 {tab === 'consolidado' ? 'Global' : tab === 'recepcion' ? 'FeetCare' : 'Surco'}
               </button>
             ))}
@@ -441,7 +730,8 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
                     <td className="px-12 py-6">
                        <p className="font-black text-slate-900 text-[12px] uppercase leading-tight">{v.producto}</p>
                        <p className="text-[9px] text-slate-400 font-bold mt-1.5 uppercase flex items-center gap-2 tracking-tighter">
-                         {v.fecha.toLocaleDateString('es-PE')} <span className="text-slate-200">|</span> {v.sede} <span className="text-slate-200">|</span> {v.categoria}
+                         {v.fecha.toLocaleDateString('es-PE')} <span className="text-slate-200">|</span>
+                         {v.sede} <span className="text-slate-200">|</span> {v.categoria}
                        </p>
                     </td>
                     <td className="px-12 py-6 text-right font-black text-slate-900 text-sm">S/ {v.total.toFixed(2)}</td>
@@ -450,14 +740,20 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
                     </td>
                     <td className="px-12 py-6 text-right font-black text-brand-600 text-sm bg-brand-50/10">S/ {v.margen.toFixed(2)}</td>
                     <td className="px-12 py-6 text-center">
-                       <span className={`text-[10px] font-black px-4 py-2 rounded-xl ${Number(v.margenPorcentaje) >= 100 || v.costo <= 0 ? 'bg-rose-100 text-rose-700' : 'bg-brand-50 text-brand-700'}`}>
+                       <span className={`text-[10px] font-black px-4 py-2 rounded-xl
+                         ${Number(v.margenPorcentaje) >= 100 || v.costo <= 0
+                           ? 'bg-rose-100 text-rose-700' : 'bg-brand-50 text-brand-700'}`}>
                           {v.margenPorcentaje}%
                        </span>
                     </td>
                   </tr>
                 ))}
                 {currentData.length === 0 && (
-                  <tr><td colSpan={5} className="px-12 py-40 text-center text-slate-300 font-black uppercase tracking-[0.4em] italic flex items-center justify-center gap-5 opacity-40"> <SearchSlash size={32}/> Sin datos en el periodo </td></tr>
+                  <tr>
+                    <td colSpan={5} className="px-12 py-40 text-center text-slate-300 font-black uppercase tracking-[0.4em] italic">
+                      <SearchSlash size={32} className="inline mb-2 mr-3"/> Sin datos en el periodo
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>
@@ -481,7 +777,9 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
           <div className="max-w-xl">
             <p className="font-black text-2xl uppercase tracking-tighter mb-2">Error Crítico Odoo 14</p>
             <p className="text-sm font-medium opacity-90 leading-relaxed font-mono bg-white p-4 rounded-2xl border border-rose-100 overflow-x-auto">{error}</p>
-            <button onClick={fetchData} className="mt-6 px-8 py-3 bg-rose-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-700 transition-colors">Reintentar Conexión</button>
+            <button onClick={fetchData} className="mt-6 px-8 py-3 bg-rose-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-700 transition-colors">
+              Reintentar Conexión
+            </button>
           </div>
         </div>
       )}
