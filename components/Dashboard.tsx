@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { 
   TrendingUp, RefreshCw, AlertCircle, LayoutGrid, Store, MapPin, 
@@ -18,6 +17,24 @@ interface DashboardProps {
 type FilterMode = 'hoy' | 'mes' | 'anio' | 'custom';
 type ReportTab = 'consolidado' | 'recepcion' | 'surco';
 
+// ─────────────────────────────────────────────────────────────
+// ✅ CORRECCIÓN TIMEZONE: Obtiene la fecha actual en Lima (UTC-5)
+// Vercel corre en UTC; sin este ajuste, los filtros de fecha
+// se desplazan 5 horas y traen ventas del día anterior.
+// ─────────────────────────────────────────────────────────────
+const getLimaDate = (): Date => {
+  const now = new Date();
+  // UTC-5: restamos 5 horas en milisegundos
+  const limaOffset = -5 * 60 * 60 * 1000;
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60 * 1000;
+  return new Date(utcMs + limaOffset);
+};
+
+// Convierte una fecha local de Lima a string YYYY-MM-DD
+const limaDateToString = (date: Date): string => {
+  return date.toLocaleDateString('en-CA'); // formato ISO YYYY-MM-DD
+};
+
 const Dashboard: React.FC<DashboardProps> = ({ session }) => {
   const [ventasData, setVentasData] = useState<Venta[]>([]); 
   const [loading, setLoading] = useState(false);
@@ -26,19 +43,22 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
   const [activeTab, setActiveTab] = useState<ReportTab>('consolidado');
   const [syncProgress, setSyncProgress] = useState('');
   
-  const today = new Date();
+  // ✅ Usamos getLimaDate() en lugar de new Date() para que "hoy"
+  //    sea siempre la fecha correcta en Lima, independientemente
+  //    del servidor donde corra Vercel.
+  const today = getLimaDate();
   const [selectedMonth, setSelectedMonth] = useState(today.getMonth());
   const [selectedYear, setSelectedYear] = useState(today.getFullYear());
   const [customRange, setCustomRange] = useState({
     start: new Date(today.getFullYear(), today.getMonth(), 1).toLocaleDateString('en-CA'),
-    end: today.toLocaleDateString('en-CA')
+    end: limaDateToString(today)
   });
 
   const dateRange = useMemo(() => {
     let start = '';
     let end = '';
     if (filterMode === 'hoy') {
-      start = today.toLocaleDateString('en-CA');
+      start = limaDateToString(getLimaDate()); // ✅ Recalcula en cada render
       end = start;
     } else if (filterMode === 'mes') {
       start = new Date(selectedYear, selectedMonth, 1).toLocaleDateString('en-CA');
@@ -69,10 +89,23 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
           };
           
           setSyncProgress('Extrayendo Pedidos...');
+
+          // ─────────────────────────────────────────────────────────────
+          // ✅ CORRECCIÓN TIMEZONE en el dominio de búsqueda a Odoo:
+          //
+          //    Odoo almacena date_order en UTC.
+          //    Lima = UTC-5, por lo tanto:
+          //      00:00:00 Lima  →  05:00:00 UTC
+          //      23:59:59 Lima  →  04:59:59 UTC del día SIGUIENTE
+          //
+          //    Si enviamos '2026-02-21 00:00:00' sin ajuste, Odoo
+          //    interpreta ese rango en UTC y trae ventas del 20/02
+          //    desde las 19:00 Lima en adelante — ventas de AYER.
+          // ─────────────────────────────────────────────────────────────
           const domain: any[] = [
             ['state', 'in', ['paid', 'done', 'invoiced']], 
-            ['date_order', '>=', `${dateRange.start} 00:00:00`],
-            ['date_order', '<=', `${dateRange.end} 23:59:59`]
+            ['date_order', '>=', `${dateRange.start} 05:00:00`], // 00:00 Lima = 05:00 UTC
+            ['date_order', '<=', `${dateRange.end} 04:59:59`]   // 23:59 Lima = 04:59 UTC día siguiente
           ];
           if (session.companyId) domain.push(['company_id', '=', session.companyId]);
 
@@ -144,7 +177,9 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
 
           const mapped: Venta[] = orders.flatMap((o: any) => {
               const orderLines = linesByOrder.get(o.id) || [];
-              const orderDate = new Date(o.date_order.replace(' ', 'T') + 'Z');
+              // ✅ Odoo devuelve date_order en UTC; convertimos a hora Lima para mostrar
+              const orderDateUTC = new Date(o.date_order.replace(' ', 'T') + 'Z');
+              const orderDate = new Date(orderDateUTC.getTime() - 5 * 60 * 60 * 1000);
               const sede = Array.isArray(o.config_id) ? o.config_id[1] : 'Caja Central';
 
               return orderLines.map((l: any) => {
@@ -169,7 +204,7 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
                       margenBruto: ventaTotal - costoTotal,
                       cantidad: l.qty,
                       sesion: '', 
-                      metodoPago: 'Efectivo', // Fallback simple para el reporte
+                      metodoPago: 'Efectivo',
                       margenPorcentaje: ventaNeta > 0 ? (((ventaNeta - costoTotal) / ventaNeta) * 100).toFixed(1) : '0.0'
                   };
               });
@@ -336,7 +371,7 @@ const Dashboard: React.FC<DashboardProps> = ({ session }) => {
                    <button onClick={() => setSelectedMonth(m => m === 11 ? 0 : m + 1)} className="p-2 hover:bg-white rounded-full transition-all text-slate-400"><ChevronRight/></button>
                 </div>
               )}
-              {filterMode === 'hoy' && <span className="text-sm font-black text-brand-600 uppercase italic">Fecha: {today.toLocaleDateString()}</span>}
+              {filterMode === 'hoy' && <span className="text-sm font-black text-brand-600 uppercase italic">Fecha: {limaDateToString(getLimaDate())}</span>}
            </div>
         </div>
       </div>
